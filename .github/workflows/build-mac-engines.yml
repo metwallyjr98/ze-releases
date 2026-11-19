@@ -17,8 +17,8 @@ jobs:
       matrix:
         include:
           - arch: arm64
-            os: macos-15
-            flags: -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON
+            os: macos-15-intel
+            flags: -DCMAKE_SYSTEM_PROCESSOR=arm64 -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON
           - arch: x86_64
             os: macos-15-intel
             flags: -DGGML_METAL=OFF
@@ -40,7 +40,8 @@ jobs:
         run: |
           otool -L build/bin/whisper-cli
           if otool -L build/bin/whisper-cli | grep -E "homebrew|/usr/local|@rpath"; then echo "not portable"; exit 1; fi
-          build/bin/whisper-cli --help | head -5
+          file build/bin/whisper-cli
+          if [ "${{ matrix.arch }}" = "x86_64" ]; then build/bin/whisper-cli --help | head -5; fi
 
       - name: Package
         run: |
