@@ -1,0 +1,76 @@
+name: Build Mac engines
+
+# Builds a portable whisper-cli for macOS (Apple Silicon + Intel) and publishes it as the
+# "engines-v1" pre-release. ZE downloads it on customers' Macs — no Homebrew, no password.
+# Run it from the Actions tab → "Build Mac engines" → "Run workflow".
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  whisper:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            os: macos-14
+            flags: -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON
+          - arch: x86_64
+            os: macos-15-intel
+            flags: -DGGML_METAL=OFF
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Get whisper.cpp
+        run: git clone --depth 1 --branch v1.9.5 https://github.com/ggml-org/whisper.cpp src
+
+      - name: Build (static, no Homebrew libraries)
+        run: |
+          cmake -S src -B build -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=ON -DWHISPER_SDL2=OFF \
+            -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DGGML_BLAS=ON -DGGML_ACCELERATE=ON \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
+            ${{ matrix.flags }}
+          cmake --build build --config Release -j 4 --target whisper-cli
+
+      - name: Check it is self-contained
+        run: |
+          otool -L build/bin/whisper-cli
+          if otool -L build/bin/whisper-cli | grep -E "homebrew|/usr/local|@rpath"; then echo "not portable"; exit 1; fi
+          build/bin/whisper-cli --help | head -5
+
+      - name: Package
+        run: |
+          mkdir out
+          cp build/bin/whisper-cli out/
+          cp src/LICENSE out/whisper.cpp-LICENSE
+          codesign --force -s - out/whisper-cli
+          cd out && zip -9 ../ze-whisper-macos-${{ matrix.arch }}.zip *
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: whisper-${{ matrix.arch }}
+          path: ze-whisper-macos-${{ matrix.arch }}.zip
+
+  publish:
+    needs: whisper
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish as a pre-release (never "latest", so ZE updates are not affected)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete engines-v1 -R ${{ github.repository }} -y --cleanup-tag || true
+          gh release create engines-v1 dist/*.zip -R ${{ github.repository }} \
+            --title "ZE engines for Mac" \
+            --notes "Portable engines that ZE downloads on Macs. Not a ZE version." \
+            --prerelease --latest=false
